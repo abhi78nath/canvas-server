@@ -2,6 +2,7 @@ import { Server, Socket } from "socket.io";
 import express from "express";
 import { createServer } from "http";
 import validator from "validator";
+import { registerChatHandlers } from "./chat";
 
 const app = express();
 const httpServer = createServer(app);
@@ -107,6 +108,17 @@ io.on("connection", (socket: Socket) => {
 
     callback?.({ success: true, roomId, playerId: socket.id });
     console.log(`${username} joined ${roomId}`);
+  });
+
+  // Chat handlers need access to current room and username
+  registerChatHandlers(io, socket, {
+    getRoomId: () => socketRoom.get(socket.id),
+    getUsername: () => {
+      const room = socketRoom.get(socket.id);
+      if (!room) return undefined;
+      const state = getRoomState(room);
+      return state.users.get(socket.id)?.username;
+    },
   });
 
   const throttledDraw = throttle((data: any) => {
