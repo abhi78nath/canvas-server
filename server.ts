@@ -1,6 +1,7 @@
-import { Server } from "socket.io";
+import { Server, Socket } from "socket.io";
 import express from "express";
 import { createServer } from "http";
+import validator from "validator";
 
 const app = express();
 const httpServer = createServer(app);
@@ -15,11 +16,11 @@ const io = new Server(httpServer, {
 type RoomState = {
   currentDrawer: string | null;
   drawEvents: CanvasEvent[];
-  users: Map<string, string>; // socketId -> name
+  users: Map<string, { username: string; score: number; isDrawing: boolean }>;
+  roundNumber: number;
+  currentWord: string;
 };
 
-// Persist a simple event log to reconstruct the canvas for late joiners per room
-// We reset this on clear; each event contains the originating user for path continuity
 type BeginPathEvent = { type: "beginPath"; userId: string; x: number; y: number };
 type DrawEvent = {
   type: "draw";
@@ -32,43 +33,83 @@ type DrawEvent = {
 type CanvasEvent = BeginPathEvent | DrawEvent;
 
 const rooms = new Map<string, RoomState>();
-const socketRoom = new Map<string, string>(); // socketId -> room
+const socketRoom = new Map<string, string>();
 
 function getRoomState(room: string): RoomState {
   let state = rooms.get(room);
   if (!state) {
-    state = { currentDrawer: null, drawEvents: [], users: new Map() };
+    state = { currentDrawer: null, drawEvents: [], users: new Map(), roundNumber: 1, currentWord: "" };
     rooms.set(room, state);
   }
   return state;
 }
 
-io.on("connection", (socket) => {
+// Throttle draw events
+const throttle = (fn: Function, limit: number) => {
+  let lastCall = 0;
+  return (...args: any[]) => {
+    const now = Date.now();
+    if (now - lastCall >= limit) {
+      lastCall = now;
+      fn(...args);
+    }
+  };
+};
+
+io.on("connection", (socket: Socket) => {
   console.log("User connected:", socket.id);
 
-  // User joins a specific room with a name
-  socket.on("joinRoom", ({ room, name }: { room: string; name: string }) => {
-    const r = (room || "lobby").trim() || "lobby";
-    const trimmed = (name || "").trim();
-    if (!trimmed) return;
-    socket.join(r);
-    socketRoom.set(socket.id, r);
-    const state = getRoomState(r);
-    state.users.set(socket.id, trimmed);
-    io.to(r).emit("userJoined", trimmed);
-    io.to(r).emit("participants", Array.from(state.users.values()));
+  socket.on("joinRoom", ({ room, name }: { room: string; name: string }, callback) => {
+    const roomId = (room || "lobby").trim().toLowerCase();
+    const username = validator.escape(name.trim());
+
+    if (!roomId || roomId.length > 50 || !validator.isAlphanumeric(roomId, "en-US", { ignore: "-" })) {
+      return callback?.({ error: "Invalid room ID" });
+    }
+    if (!username || username.length < 2 || username.length > 20) {
+      return callback?.({ error: "Username must be 2-20 characters" });
+    }
+
+    const state = getRoomState(roomId);
+    if (state.users.size >= 8) {
+      return callback?.({ error: "Room is full" });
+    }
+
+    // Handle reconnect: update socketId if username exists
+    let existingSocketId: string | null = null;
+    for (const [sid, user] of state.users.entries()) {
+      if (user.username.toLowerCase() === username.toLowerCase()) {
+        existingSocketId = sid;
+        break;
+      }
+    }
+    if (existingSocketId) {
+      state.users.delete(existingSocketId);
+      socketRoom.delete(existingSocketId);
+      if (state.currentDrawer === existingSocketId) {
+        state.currentDrawer = null;
+        io.to(roomId).emit("drawRevoked");
+      }
+    }
+
+    socket.join(roomId);
+    socketRoom.set(socket.id, roomId);
+    state.users.set(socket.id, { username, score: 0, isDrawing: state.users.size === 0 });
+    if (state.users.size === 1) state.currentDrawer = socket.id;
+
+    io.to(roomId).emit("userJoined", username);
+    io.to(roomId).emit("participants", Array.from(state.users.entries()).map(([id, user]) => ({
+      socketId: id,
+      username: user.username,
+      score: user.score,
+      isDrawing: user.isDrawing
+    })));
+
+    callback?.({ success: true, roomId, playerId: socket.id });
+    console.log(`${username} joined ${roomId}`);
   });
 
-  socket.on("beginPath", (data) => {
-    const room = socketRoom.get(socket.id);
-    if (!room) return;
-    const state = getRoomState(room);
-    const payload: BeginPathEvent = { type: "beginPath", userId: socket.id, x: data.x, y: data.y };
-    state.drawEvents.push(payload);
-    socket.to(room).emit("beginPath", payload);
-  });
-
-  socket.on("draw", (data) => {
+  const throttledDraw = throttle((data: any) => {
     const room = socketRoom.get(socket.id);
     if (!room) return;
     const state = getRoomState(room);
@@ -82,18 +123,27 @@ io.on("connection", (socket) => {
     };
     state.drawEvents.push(payload);
     socket.to(room).emit("draw", payload);
+  }, 50);
+
+  socket.on("beginPath", (data) => {
+    const room = socketRoom.get(socket.id);
+    if (!room) return;
+    const state = getRoomState(room);
+    const payload: BeginPathEvent = { type: "beginPath", userId: socket.id, x: data.x, y: data.y };
+    state.drawEvents.push(payload);
+    socket.to(room).emit("beginPath", payload);
   });
+
+  socket.on("draw", throttledDraw);
 
   socket.on("clear", () => {
     const room = socketRoom.get(socket.id);
     if (!room) return;
     const state = getRoomState(room);
-    // Reset server-side state and inform everyone in the room
     state.drawEvents.length = 0;
     socket.to(room).emit("clear");
   });
 
-  // Late joiners can request the current canvas state
   socket.on("requestCanvasState", () => {
     const room = socketRoom.get(socket.id);
     if (!room) return;
@@ -104,12 +154,16 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Request current participants list
   socket.on("requestParticipants", () => {
     const room = socketRoom.get(socket.id);
     if (!room) return;
     const state = getRoomState(room);
-    socket.emit("participants", Array.from(state.users.values()));
+    socket.emit("participants", Array.from(state.users.entries()).map(([id, user]) => ({
+      socketId: id,
+      username: user.username,
+      score: user.score,
+      isDrawing: user.isDrawing
+    })));
   });
 
   socket.on("requestDraw", () => {
@@ -117,8 +171,8 @@ io.on("connection", (socket) => {
     if (!room) return;
     const state = getRoomState(room);
     if (!state.currentDrawer) {
-      console.log("User requesting draw rights:", socket.id, "room:", room);
       state.currentDrawer = socket.id;
+      state.users.get(socket.id)!.isDrawing = true;
       io.to(room).emit("drawGranted", socket.id);
     }
   });
@@ -129,24 +183,40 @@ io.on("connection", (socket) => {
     const state = getRoomState(room);
     if (state.currentDrawer === socket.id) {
       state.currentDrawer = null;
+      state.users.get(socket.id)!.isDrawing = false;
       io.to(room).emit("drawRevoked");
     }
   });
 
   socket.on("disconnect", () => {
     const room = socketRoom.get(socket.id);
-    if (!room) return;
+    if (!room) {
+      console.log(`No room found for disconnected socket: ${socket.id}`);
+      return;
+    }
     socketRoom.delete(socket.id);
     const state = getRoomState(room);
-    const name = state.users.get(socket.id);
-    if (name) {
+    const user = state.users.get(socket.id);
+    if (user) {
+      console.log(`${user.username} disconnected from ${room}`);
       state.users.delete(socket.id);
-      io.to(room).emit("userLeft", name);
-      io.to(room).emit("participants", Array.from(state.users.values()));
-    }
-    if (state.currentDrawer === socket.id) {
-      state.currentDrawer = null;
-      io.to(room).emit("drawRevoked");
+      io.to(room).emit("userLeft", user.username);
+      io.to(room).emit("participants", Array.from(state.users.entries()).map(([id, user]) => ({
+        socketId: id,
+        username: user.username,
+        score: user.score,
+        isDrawing: user.isDrawing
+      })));
+      if (state.currentDrawer === socket.id) {
+        state.currentDrawer = null;
+        io.to(room).emit("drawRevoked");
+      }
+      if (state.users.size === 0) {
+        console.log(`Room ${room} is empty, deleting`);
+        rooms.delete(room);
+      }
+    } else {
+      console.warn(`No user found for socket: ${socket.id} in room: ${room}`);
     }
   });
 });
