@@ -17,7 +17,7 @@ export function createRoundManager(
   io: Server,
   getRoomState: (roomId: string) => RotationRoomState
 ) {
-  const ROUND_DURATION_MS = 10000; // default 60s per drawer
+  const ROUND_DURATION_MS = 30000; // default 60s per drawer
 
   function broadcastParticipants(roomId: string) {
     const state = getRoomState(roomId);
