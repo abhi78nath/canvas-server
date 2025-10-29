@@ -3,6 +3,7 @@ import express from "express";
 import { createServer } from "http";
 import validator from "validator";
 import { registerChatHandlers } from "./chat";
+import { createRoundManager } from "./game-logic/game-logic";
 
 const app = express();
 const httpServer = createServer(app);
@@ -20,6 +21,12 @@ type RoomState = {
   users: Map<string, { username: string; score: number; isDrawing: boolean }>;
   roundNumber: number;
   currentWord: string;
+  ownerId: string | null;
+  drawerOrder: string[];
+  currentDrawerIndex: number;
+  roundTimer: NodeJS.Timeout | null;
+  roundInProgress: boolean;
+  roundEndsAt?: number;
 };
 
 type BeginPathEvent = { type: "beginPath"; userId: string; x: number; y: number };
@@ -39,7 +46,18 @@ const socketRoom = new Map<string, string>();
 function getRoomState(room: string): RoomState {
   let state = rooms.get(room);
   if (!state) {
-    state = { currentDrawer: null, drawEvents: [], users: new Map(), roundNumber: 1, currentWord: "" };
+    state = {
+      currentDrawer: null,
+      drawEvents: [],
+      users: new Map(),
+      roundNumber: 1,
+      currentWord: "",
+      ownerId: null,
+      drawerOrder: [],
+      currentDrawerIndex: 0,
+      roundTimer: null,
+      roundInProgress: false,
+    };
     rooms.set(room, state);
   }
   return state;
@@ -59,6 +77,8 @@ const throttle = (fn: Function, limit: number) => {
 
 io.on("connection", (socket: Socket) => {
   console.log("User connected:", socket.id);
+
+  const roundManager = createRoundManager(io, (roomId) => getRoomState(roomId));
 
   socket.on("joinRoom", ({ room, name }: { room: string; name: string }, callback) => {
     const roomId = (room || "lobby").trim().toLowerCase();
@@ -95,19 +115,17 @@ io.on("connection", (socket: Socket) => {
 
     socket.join(roomId);
     socketRoom.set(socket.id, roomId);
-    state.users.set(socket.id, { username, score: 0, isDrawing: state.users.size === 0 });
-    if (state.users.size === 1) state.currentDrawer = socket.id;
+    state.users.set(socket.id, { username, score: 0, isDrawing: false });
+    roundManager.onUserJoin(roomId, socket.id);
 
     io.to(roomId).emit("userJoined", username);
-    io.to(roomId).emit("participants", Array.from(state.users.entries()).map(([id, user]) => ({
-      socketId: id,
-      username: user.username,
-      score: user.score,
-      isDrawing: user.isDrawing
-    })));
+    roundManager.broadcastParticipants(roomId);
 
     callback?.({ success: true, roomId, playerId: socket.id });
     console.log(`${username} joined ${roomId}`);
+
+    // Start rotation when there are at least two users
+    roundManager.startRotationIfEligible(roomId);
   });
 
   // Chat handlers need access to current room and username
@@ -125,6 +143,7 @@ io.on("connection", (socket: Socket) => {
     const room = socketRoom.get(socket.id);
     if (!room) return;
     const state = getRoomState(room);
+    if (!roundManager.isCurrentDrawer(room, socket.id)) return;
     const payload: DrawEvent = {
       type: "draw",
       userId: socket.id,
@@ -141,6 +160,7 @@ io.on("connection", (socket: Socket) => {
     const room = socketRoom.get(socket.id);
     if (!room) return;
     const state = getRoomState(room);
+    if (!roundManager.isCurrentDrawer(room, socket.id)) return;
     const payload: BeginPathEvent = { type: "beginPath", userId: socket.id, x: data.x, y: data.y };
     state.drawEvents.push(payload);
     socket.to(room).emit("beginPath", payload);
@@ -152,6 +172,7 @@ io.on("connection", (socket: Socket) => {
     const room = socketRoom.get(socket.id);
     if (!room) return;
     const state = getRoomState(room);
+    if (!roundManager.isCurrentDrawer(room, socket.id)) return;
     state.drawEvents.length = 0;
     socket.to(room).emit("clear");
   });
@@ -169,13 +190,7 @@ io.on("connection", (socket: Socket) => {
   socket.on("requestParticipants", () => {
     const room = socketRoom.get(socket.id);
     if (!room) return;
-    const state = getRoomState(room);
-    socket.emit("participants", Array.from(state.users.entries()).map(([id, user]) => ({
-      socketId: id,
-      username: user.username,
-      score: user.score,
-      isDrawing: user.isDrawing
-    })));
+    roundManager.broadcastParticipants(room);
   });
 
   socket.on("requestDraw", () => {
@@ -211,17 +226,22 @@ io.on("connection", (socket: Socket) => {
     const user = state.users.get(socket.id);
     if (user) {
       console.log(`${user.username} disconnected from ${room}`);
+      // Update rotation lists and owner if needed
+      roundManager.onUserLeft(room, socket.id);
       state.users.delete(socket.id);
       io.to(room).emit("userLeft", user.username);
-      io.to(room).emit("participants", Array.from(state.users.entries()).map(([id, user]) => ({
-        socketId: id,
-        username: user.username,
-        score: user.score,
-        isDrawing: user.isDrawing
-      })));
-      if (state.currentDrawer === socket.id) {
-        state.currentDrawer = null;
-        io.to(room).emit("drawRevoked");
+      // If drawer left mid-round, rotate to next; otherwise just update participants/draw state
+      if (state.currentDrawer === socket.id && state.roundInProgress) {
+        roundManager.rotateToNext(room);
+      } else {
+        if (state.currentDrawer === socket.id) {
+          state.currentDrawer = null;
+          for (const [, u] of state.users.entries()) u.isDrawing = false;
+          io.to(room).emit("drawRevoked");
+        }
+        roundManager.broadcastParticipants(room);
+        // If after disconnect we now have >=2 users and no round in progress, start one
+        roundManager.startRotationIfEligible(room);
       }
       if (state.users.size === 0) {
         console.log(`Room ${room} is empty, deleting`);
