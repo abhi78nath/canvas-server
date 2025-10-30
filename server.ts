@@ -25,8 +25,10 @@ type RoomState = {
   drawerOrder: string[];
   currentDrawerIndex: number;
   roundTimer: NodeJS.Timeout | null;
+  wordChoiceTimer: NodeJS.Timeout | null;
   roundInProgress: boolean;
   roundEndsAt?: number;
+  wordChoiceEndsAt?: number;
 };
 
 type BeginPathEvent = { type: "beginPath"; userId: string; x: number; y: number };
@@ -56,6 +58,7 @@ function getRoomState(room: string): RoomState {
       drawerOrder: [],
       currentDrawerIndex: 0,
       roundTimer: null,
+      wordChoiceTimer: null,
       roundInProgress: false,
     };
     rooms.set(room, state);
@@ -128,6 +131,16 @@ io.on("connection", (socket: Socket) => {
     roundManager.startRotationIfEligible(roomId);
   });
 
+  socket.on("wordChosen", ({ word }: { word: string }) => {
+    const roomId = socketRoom.get(socket.id);
+    if (!roomId) return;
+    const state = getRoomState(roomId);
+    if (state.currentDrawer !== socket.id) return;
+    state.currentWord = word;
+    roundManager.startMainRoundTimer(roomId);
+    io.to(roomId).emit("wordHint", "_ ".repeat(word.length).trim());
+  });
+
   // Chat handlers need access to current room and username
   registerChatHandlers(io, socket, {
     getRoomId: () => socketRoom.get(socket.id),
@@ -183,7 +196,8 @@ io.on("connection", (socket: Socket) => {
     const state = getRoomState(room);
     socket.emit("canvasState", state.drawEvents);
     if (state.currentDrawer) {
-      socket.emit("drawGranted", state.currentDrawer);
+      // Don't emit drawGranted here on join, wait for round to start
+      // socket.emit("drawGranted", state.currentDrawer);
     }
   });
 
