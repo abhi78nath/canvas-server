@@ -11,6 +11,8 @@ export type RotationRoomState = {
   roundTimer: NodeJS.Timeout | null;
   roundInProgress: boolean;
   roundEndsAt?: number;
+  // Include canvas history so we can reset it on drawer transfer
+  drawEvents?: any[];
 };
 
 export function createRoundManager(
@@ -34,6 +36,11 @@ export function createRoundManager(
 
   function grantDrawTo(roomId: string, drawerId: string) {
     const state = getRoomState(roomId);
+    // Reset canvas for the new drawer's turn
+    if (Array.isArray(state.drawEvents)) {
+      state.drawEvents.length = 0;
+    }
+    io.to(roomId).emit("clear");
     state.currentDrawer = drawerId;
     for (const [id, user] of state.users.entries()) {
       user.isDrawing = id === drawerId;
