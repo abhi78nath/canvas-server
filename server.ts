@@ -154,6 +154,34 @@ io.on("connection", (socket: Socket) => {
       const state = getRoomState(room);
       return state.users.get(socket.id)?.username;
     },
+    checkGuess: (guess) => {
+      const room = socketRoom.get(socket.id);
+      if (!room) return false;
+      const state = getRoomState(room);
+      // Drawer cannot guess their own word
+      if (state.currentDrawer === socket.id) return false;
+      return state.currentWord.length > 0 && guess.toLowerCase() === state.currentWord.toLowerCase();
+    },
+    onCorrectGuess: (guesserId) => {
+      const room = socketRoom.get(socket.id);
+      if (!room) return;
+      const state = getRoomState(room);
+      const guesser = state.users.get(guesserId);
+      const drawer = state.users.get(state.currentDrawer!);
+
+      let newPoints = 100; // Base points
+      // Bonus for speed? TBD.
+
+      if (guesser) {
+        guesser.score += newPoints;
+      }
+      if (drawer) {
+        drawer.score += 50; // Points for a good drawing
+      }
+
+      // End the turn and move to the next person
+      roundManager.rotateToNext(room);
+    },
   });
 
   const throttledDraw = throttle((data: any) => {
