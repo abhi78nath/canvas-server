@@ -239,28 +239,6 @@ io.on("connection", (socket: Socket) => {
     roundManager.broadcastParticipants(room);
   });
 
-  socket.on("requestDraw", () => {
-    const room = socketRoom.get(socket.id);
-    if (!room) return;
-    const state = getRoomState(room);
-    if (!state.currentDrawer) {
-      state.currentDrawer = socket.id;
-      state.users.get(socket.id)!.isDrawing = true;
-      io.to(room).emit("drawGranted", socket.id);
-    }
-  });
-
-  socket.on("releaseDraw", () => {
-    const room = socketRoom.get(socket.id);
-    if (!room) return;
-    const state = getRoomState(room);
-    if (state.currentDrawer === socket.id) {
-      state.currentDrawer = null;
-      state.users.get(socket.id)!.isDrawing = false;
-      io.to(room).emit("drawRevoked");
-    }
-  });
-
   socket.on("disconnect", () => {
     const room = socketRoom.get(socket.id);
     if (!room) {
