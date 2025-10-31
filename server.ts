@@ -3,6 +3,7 @@ import express from "express";
 import { createServer } from "http";
 import validator from "validator";
 import { registerChatHandlers } from "./chat";
+import { calculateDrawerPoints, calculateGuesserPoints } from "./game-logic/point-system";
 import { createRoundManager } from "./game-logic/game-logic";
 
 const app = express();
@@ -27,6 +28,13 @@ type RoomState = {
   roundTimer: NodeJS.Timeout | null;
   roundInProgress: boolean;
   roundEndsAt?: number;
+<<<<<<< Updated upstream
+=======
+  wordChoiceEndsAt?: number;
+  revealedIndices: Set<number>;
+  correctGuessersThisTurn: Set<string>;
+  drawerBaseScore: number;
+>>>>>>> Stashed changes
 };
 
 type BeginPathEvent = { type: "beginPath"; userId: string; x: number; y: number };
@@ -57,6 +65,12 @@ function getRoomState(room: string): RoomState {
       currentDrawerIndex: 0,
       roundTimer: null,
       roundInProgress: false,
+<<<<<<< Updated upstream
+=======
+      revealedIndices: new Set(),
+      correctGuessersThisTurn: new Set(),
+      drawerBaseScore: 0,
+>>>>>>> Stashed changes
     };
     rooms.set(room, state);
   }
@@ -137,6 +151,50 @@ io.on("connection", (socket: Socket) => {
       const state = getRoomState(room);
       return state.users.get(socket.id)?.username;
     },
+<<<<<<< Updated upstream
+=======
+    checkGuess: (guess) => {
+      const room = socketRoom.get(socket.id);
+      if (!room) return false;
+      const state = getRoomState(room);
+
+      // Drawer cannot guess their own word, and can't guess if you already have
+      if (state.currentDrawer === socket.id || state.correctGuessersThisTurn.has(socket.id)) {
+        return false;
+      }
+      return state.currentWord.length > 0 && guess.toLowerCase() === state.currentWord.toLowerCase();
+    },
+    onCorrectGuess: (guesserId) => {
+      const room = socketRoom.get(socket.id);
+      if (!room) return;
+      const state = getRoomState(room);
+      if (!state.roundEndsAt) return;
+
+      const timeLeft = (state.roundEndsAt - Date.now()) / 1000;
+      state.correctGuessersThisTurn.add(guesserId);
+      const guesserRank = state.correctGuessersThisTurn.size;
+
+      const guesser = state.users.get(guesserId);
+      if (guesser) {
+        const points = calculateGuesserPoints(guesserRank, timeLeft);
+        guesser.score += points;
+      }
+
+      const drawer = state.users.get(state.currentDrawer!);
+      if (drawer) {
+        const drawerPoints = calculateDrawerPoints(guesserRank, timeLeft);
+        // We calculate total points for the turn and add it to their base score at start of turn
+        drawer.score = state.drawerBaseScore + drawerPoints;
+      }
+      
+      roundManager.broadcastParticipants(room);
+
+      // If everyone except the drawer has guessed, end the turn early
+      if (state.correctGuessersThisTurn.size === state.users.size - 1) {
+        roundManager.rotateToNext(room);
+      }
+    },
+>>>>>>> Stashed changes
   });
 
   const throttledDraw = throttle((data: any) => {

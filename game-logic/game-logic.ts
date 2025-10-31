@@ -13,6 +13,8 @@ export type RotationRoomState = {
   roundEndsAt?: number;
   // Include canvas history so we can reset it on drawer transfer
   drawEvents?: any[];
+  correctGuessersThisTurn: Set<string>;
+  drawerBaseScore: number;
 };
 
 export function createRoundManager(
@@ -137,6 +139,63 @@ export function createRoundManager(
     }
   }
 
+<<<<<<< Updated upstream
+=======
+  function startMainRoundTimer(roomId: string) {
+    const state = getRoomState(roomId);
+    // A word has been chosen, clear the choice timer and start the main one
+    clearWordChoiceTimer(state);
+    scheduleNextRotation(roomId);
+    io.to(roomId).emit("roundStart", { duration: ROUND_DURATION_MS });
+
+    // Reset scoring state for the new turn
+    state.correctGuessersThisTurn.clear();
+    const drawer = state.users.get(state.currentDrawer!);
+    state.drawerBaseScore = drawer ? drawer.score : 0;
+
+    // Schedule hints
+    state.revealedIndices = new Set();
+    scheduleNextHint(roomId, 10000);
+  }
+
+  function scheduleNextHint(roomId: string, delay: number) {
+    const state = getRoomState(roomId);
+    clearHintTimer(state); // Clear previous timer
+
+    if (!state.currentWord || !state.roundInProgress) return;
+
+    state.hintTimer = setTimeout(() => {
+      if (!state.currentWord || !state.roundInProgress) return;
+
+      // Find all indices of letters that haven't been revealed yet
+      const unrevealedIndices: number[] = [];
+      for (let i = 0; i < state.currentWord.length; i++) {
+        // Ignore spaces and already revealed letters
+        if (state.currentWord[i] !== ' ' && !state.revealedIndices.has(i)) {
+          unrevealedIndices.push(i);
+        }
+      }
+
+      // Only reveal a new letter if there's more than one character left to guess
+      if (unrevealedIndices.length > 1) {
+        const randomIndexToReveal = unrevealedIndices[Math.floor(Math.random() * unrevealedIndices.length)];
+        state.revealedIndices.add(randomIndexToReveal);
+
+        // Reconstruct the hint string with the newly revealed letter
+        const newHint = state.currentWord.split('').map((char, index) => {
+          if (char === ' ') return ' ';
+          return state.revealedIndices.has(index) ? char : '_';
+        }).join(' ');
+
+        io.to(roomId).emit("wordHint", newHint.trim());
+
+        // Schedule the next hint
+        scheduleNextHint(roomId, 10000);
+      }
+    }, delay);
+  }
+
+>>>>>>> Stashed changes
   return {
     broadcastParticipants,
     startRotationIfEligible,
