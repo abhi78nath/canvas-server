@@ -26,9 +26,11 @@ type RoomState = {
   currentDrawerIndex: number;
   roundTimer: NodeJS.Timeout | null;
   wordChoiceTimer: NodeJS.Timeout | null;
+  hintTimer: NodeJS.Timeout | null;
   roundInProgress: boolean;
   roundEndsAt?: number;
   wordChoiceEndsAt?: number;
+  revealedIndices: Set<number>;
 };
 
 type BeginPathEvent = { type: "beginPath"; userId: string; x: number; y: number };
@@ -59,7 +61,9 @@ function getRoomState(room: string): RoomState {
       currentDrawerIndex: 0,
       roundTimer: null,
       wordChoiceTimer: null,
+      hintTimer: null,
       roundInProgress: false,
+      revealedIndices: new Set(),
     };
     rooms.set(room, state);
   }
