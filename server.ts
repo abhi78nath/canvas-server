@@ -21,6 +21,7 @@ type RoomState = {
   drawEvents: CanvasEvent[];
   users: Map<string, { username: string; score: number; isDrawing: boolean }>;
   roundNumber: number;
+  totalRounds: number;
   currentWord: string;
   ownerId: string | null;
   drawerOrder: string[];
@@ -58,6 +59,7 @@ function getRoomState(room: string): RoomState {
       drawEvents: [],
       users: new Map(),
       roundNumber: 1,
+      totalRounds: 3,
       currentWord: "",
       ownerId: null,
       drawerOrder: [],
@@ -129,6 +131,13 @@ io.on("connection", (socket: Socket) => {
     socketRoom.set(socket.id, roomId);
     state.users.set(socket.id, { username, score: 0, isDrawing: false });
     roundManager.onUserJoin(roomId, socket.id);
+
+    if (state.roundInProgress) {
+      socket.emit("newRound", {
+        roundNumber: state.roundNumber,
+        totalRounds: state.totalRounds,
+      });
+    }
 
     io.to(roomId).emit("userJoined", username);
     roundManager.broadcastParticipants(roomId);

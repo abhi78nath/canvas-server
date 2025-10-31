@@ -20,6 +20,8 @@ export type RotationRoomState = {
   revealedIndices: Set<number>;
   correctGuessers: string[];
   lastGuessTime: number | null;
+  roundNumber: number;
+  totalRounds: number;
   // Include canvas history so we can reset it on drawer transfer
   drawEvents?: any[];
 };
@@ -131,6 +133,10 @@ export function createRoundManager(
     if (state.drawerOrder.length < 2) return;
     state.roundInProgress = true;
     state.currentDrawerIndex = 0;
+    io.to(roomId).emit("newRound", {
+      roundNumber: state.roundNumber,
+      totalRounds: state.totalRounds,
+    });
     grantDrawTo(roomId, state.drawerOrder[state.currentDrawerIndex]);
   }
 
@@ -161,13 +167,62 @@ export function createRoundManager(
     // Advance to next index
     state.currentDrawerIndex += 1;
     if (state.currentDrawerIndex >= state.drawerOrder.length) {
-      // Reached end: end the round (one turn per player)
-      state.roundInProgress = false;
-      clearRoundTimer(state);
-      state.currentDrawer = null;
-      for (const [, user] of state.users.entries()) user.isDrawing = false;
-      io.to(roomId).emit("drawRevoked");
-      broadcastParticipants(roomId);
+      // Reached end: check if we should start a new round or end the game
+      if (state.roundNumber >= state.totalRounds) {
+        // Game over
+        const finalRankings = Array.from(state.users.values())
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 3);
+
+        io.to(roomId).emit("gameOver", { rankings: finalRankings });
+        state.roundInProgress = false;
+        clearRoundTimer(state);
+        state.currentDrawer = null;
+        for (const [, user] of state.users.entries()) user.isDrawing = false;
+        io.to(roomId).emit("drawRevoked");
+        broadcastParticipants(roomId);
+
+        // After a short delay, reset scores and potentially start a new game
+        setTimeout(() => {
+          for (const user of state.users.values()) {
+            user.score = 0;
+          }
+          state.roundNumber = 1;
+          broadcastParticipants(roomId);
+          io.to(roomId).emit("chatMessage", {
+            id: `system_${Date.now()}`,
+            author: "System",
+            text: "Game over! Scores have been reset. A new game will start if there are enough players.",
+            timestamp: Date.now(),
+          });
+          startRotationIfEligible(roomId);
+        }, 5000);
+
+        return;
+      }
+
+      // Start the next round
+      state.roundNumber += 1;
+      io.to(roomId).emit("newRound", {
+        roundNumber: state.roundNumber,
+        totalRounds: state.totalRounds,
+      });
+      buildDrawerOrder(roomId);
+      state.currentDrawerIndex = 0;
+      if (state.drawerOrder.length < 2) {
+        // Not enough players to continue
+        state.roundInProgress = false;
+        clearRoundTimer(state);
+        io.to(roomId).emit("chatMessage", {
+          id: `system_${Date.now()}`,
+          author: "System",
+          text: `The game has ended due to a lack of players.`,
+          timestamp: Date.now(),
+        });
+        return;
+      }
+      const nextDrawerId = state.drawerOrder[state.currentDrawerIndex];
+      grantDrawTo(roomId, nextDrawerId);
       return;
     }
 
