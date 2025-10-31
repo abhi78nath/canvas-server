@@ -1,5 +1,6 @@
 import { Server } from "socket.io";
 import { getRandomWords } from "./word-chooser";
+import { calculateDrawerScore } from "./point-system";
 
 type User = { username: string; score: number; isDrawing: boolean };
 
@@ -17,6 +18,8 @@ export type RotationRoomState = {
   wordChoiceEndsAt?: number;
   currentWord: string;
   revealedIndices: Set<number>;
+  correctGuessers: string[];
+  lastGuessTime: number | null;
   // Include canvas history so we can reset it on drawer transfer
   drawEvents?: any[];
 };
@@ -25,7 +28,7 @@ export function createRoundManager(
   io: Server,
   getRoomState: (roomId: string) => RotationRoomState
 ) {
-  const ROUND_DURATION_MS = 30000;
+  const ROUND_DURATION_MS = 80000;
   const WORD_CHOICE_DURATION_MS = 15000;
 
   function broadcastParticipants(roomId: string) {
@@ -49,6 +52,8 @@ export function createRoundManager(
     }
     io.to(roomId).emit("clear");
     state.currentDrawer = drawerId;
+    state.correctGuessers = [];
+    state.lastGuessTime = null;
     for (const [id, user] of state.users.entries()) {
       user.isDrawing = id === drawerId;
     }
@@ -132,6 +137,21 @@ export function createRoundManager(
   function rotateToNext(roomId: string) {
     const state = getRoomState(roomId);
     if (!state.roundInProgress) return;
+
+    // Award points to the drawer if their turn is ending
+    const drawer = state.users.get(state.currentDrawer!);
+    if (drawer && state.correctGuessers.length > 0) {
+      const timeLeftOnLastGuessMs = state.roundEndsAt! - state.lastGuessTime!;
+      const timeLeftOnLastGuessSeconds = Math.max(0, timeLeftOnLastGuessMs / 1000);
+      const drawerPoints = calculateDrawerScore(
+        state.correctGuessers.length,
+        timeLeftOnLastGuessSeconds,
+        ROUND_DURATION_MS / 1000
+      );
+      drawer.score += drawerPoints;
+      // Broadcast final scores before the next turn starts
+      broadcastParticipants(roomId);
+    }
 
     // Stop any running timers for the previous player
     clearRoundTimer(state);
