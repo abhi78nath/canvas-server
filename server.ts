@@ -25,8 +25,12 @@ type RoomState = {
   drawerOrder: string[];
   currentDrawerIndex: number;
   roundTimer: NodeJS.Timeout | null;
+  wordChoiceTimer: NodeJS.Timeout | null;
+  hintTimer: NodeJS.Timeout | null;
   roundInProgress: boolean;
   roundEndsAt?: number;
+  wordChoiceEndsAt?: number;
+  revealedIndices: Set<number>;
 };
 
 type BeginPathEvent = { type: "beginPath"; userId: string; x: number; y: number };
@@ -56,7 +60,10 @@ function getRoomState(room: string): RoomState {
       drawerOrder: [],
       currentDrawerIndex: 0,
       roundTimer: null,
+      wordChoiceTimer: null,
+      hintTimer: null,
       roundInProgress: false,
+      revealedIndices: new Set(),
     };
     rooms.set(room, state);
   }
@@ -128,6 +135,16 @@ io.on("connection", (socket: Socket) => {
     roundManager.startRotationIfEligible(roomId);
   });
 
+  socket.on("wordChosen", ({ word }: { word: string }) => {
+    const roomId = socketRoom.get(socket.id);
+    if (!roomId) return;
+    const state = getRoomState(roomId);
+    if (state.currentDrawer !== socket.id) return;
+    state.currentWord = word;
+    roundManager.startMainRoundTimer(roomId);
+    io.to(roomId).emit("wordHint", "_ ".repeat(word.length).trim());
+  });
+
   // Chat handlers need access to current room and username
   registerChatHandlers(io, socket, {
     getRoomId: () => socketRoom.get(socket.id),
@@ -136,6 +153,34 @@ io.on("connection", (socket: Socket) => {
       if (!room) return undefined;
       const state = getRoomState(room);
       return state.users.get(socket.id)?.username;
+    },
+    checkGuess: (guess) => {
+      const room = socketRoom.get(socket.id);
+      if (!room) return false;
+      const state = getRoomState(room);
+      // Drawer cannot guess their own word
+      if (state.currentDrawer === socket.id) return false;
+      return state.currentWord.length > 0 && guess.toLowerCase() === state.currentWord.toLowerCase();
+    },
+    onCorrectGuess: (guesserId) => {
+      const room = socketRoom.get(socket.id);
+      if (!room) return;
+      const state = getRoomState(room);
+      const guesser = state.users.get(guesserId);
+      const drawer = state.users.get(state.currentDrawer!);
+
+      let newPoints = 100; // Base points
+      // Bonus for speed? TBD.
+
+      if (guesser) {
+        guesser.score += newPoints;
+      }
+      if (drawer) {
+        drawer.score += 50; // Points for a good drawing
+      }
+
+      // End the turn and move to the next person
+      roundManager.rotateToNext(room);
     },
   });
 
@@ -183,7 +228,8 @@ io.on("connection", (socket: Socket) => {
     const state = getRoomState(room);
     socket.emit("canvasState", state.drawEvents);
     if (state.currentDrawer) {
-      socket.emit("drawGranted", state.currentDrawer);
+      // Don't emit drawGranted here on join, wait for round to start
+      // socket.emit("drawGranted", state.currentDrawer);
     }
   });
 
