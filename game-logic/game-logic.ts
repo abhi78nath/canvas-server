@@ -182,21 +182,19 @@ export function createRoundManager(
         io.to(roomId).emit("drawRevoked");
         broadcastParticipants(roomId);
 
-        // After a short delay, reset scores and potentially start a new game
+        // After a short delay, disconnect all sockets in the room.
+        // The client should also handle redirection. This is a fallback.
         setTimeout(() => {
-          for (const user of state.users.values()) {
-            user.score = 0;
+          const roomSockets = io.sockets.adapter.rooms.get(roomId);
+          if (roomSockets) {
+            roomSockets.forEach(socketId => {
+              const socket = io.sockets.sockets.get(socketId);
+              if (socket) {
+                socket.disconnect(true);
+              }
+            });
           }
-          state.roundNumber = 1;
-          broadcastParticipants(roomId);
-          io.to(roomId).emit("chatMessage", {
-            id: `system_${Date.now()}`,
-            author: "System",
-            text: "Game over! Scores have been reset. A new game will start if there are enough players.",
-            timestamp: Date.now(),
-          });
-          startRotationIfEligible(roomId);
-        }, 5000);
+        }, 10000); // Give clients 10 seconds to show final screen.
 
         return;
       }
