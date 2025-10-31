@@ -4,6 +4,7 @@ import { createServer } from "http";
 import validator from "validator";
 import { registerChatHandlers } from "./chat";
 import { createRoundManager } from "./game-logic/game-logic";
+import { calculateGuesserScore } from "./game-logic/point-system";
 
 const app = express();
 const httpServer = createServer(app);
@@ -31,6 +32,8 @@ type RoomState = {
   roundEndsAt?: number;
   wordChoiceEndsAt?: number;
   revealedIndices: Set<number>;
+  correctGuessers: string[];
+  lastGuessTime: number | null;
 };
 
 type BeginPathEvent = { type: "beginPath"; userId: string; x: number; y: number };
@@ -64,6 +67,8 @@ function getRoomState(room: string): RoomState {
       hintTimer: null,
       roundInProgress: false,
       revealedIndices: new Set(),
+      correctGuessers: [],
+      lastGuessTime: null,
     };
     rooms.set(room, state);
   }
@@ -166,21 +171,31 @@ io.on("connection", (socket: Socket) => {
       const room = socketRoom.get(socket.id);
       if (!room) return;
       const state = getRoomState(room);
+
+      // Ensure user hasn't already guessed this round
+      if (state.correctGuessers.includes(guesserId)) return;
+
+      const timeLeftMs = state.roundEndsAt! - Date.now();
+      const timeLeftSeconds = Math.max(0, timeLeftMs / 1000);
+
       const guesser = state.users.get(guesserId);
-      const drawer = state.users.get(state.currentDrawer!);
-
-      let newPoints = 100; // Base points
-      // Bonus for speed? TBD.
-
       if (guesser) {
-        guesser.score += newPoints;
-      }
-      if (drawer) {
-        drawer.score += 50; // Points for a good drawing
+        const rank = state.correctGuessers.length;
+        const points = calculateGuesserScore(timeLeftSeconds, 80, rank);
+        guesser.score += points;
       }
 
-      // End the turn and move to the next person
-      roundManager.rotateToNext(room);
+      state.correctGuessers.push(guesserId);
+      state.lastGuessTime = Date.now();
+
+      // Update participants with new scores
+      roundManager.broadcastParticipants(room);
+
+      // If all players (except the drawer) have guessed, end the turn early.
+      const totalPlayers = state.users.size;
+      if (state.correctGuessers.length >= totalPlayers - 1) {
+        roundManager.rotateToNext(room);
+      }
     },
   });
 
