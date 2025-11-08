@@ -119,11 +119,24 @@ io.on("connection", (socket: Socket) => {
       }
     }
     if (existingSocketId) {
+      // Clean up previous connection that used the same username (treat as reconnect/duplicate name)
+      const previousUser = state.users.get(existingSocketId);
       state.users.delete(existingSocketId);
       socketRoom.delete(existingSocketId);
       if (state.currentDrawer === existingSocketId) {
         state.currentDrawer = null;
         io.to(roomId).emit("drawRevoked");
+      }
+      // Notify room that the previous user left and fully disconnect their socket
+      if (previousUser) {
+        io.to(roomId).emit("userLeft", previousUser.username);
+      }
+      const oldSocket = io.sockets.sockets.get(existingSocketId);
+      if (oldSocket) {
+        try {
+          oldSocket.leave(roomId);
+        } catch {}
+        oldSocket.disconnect(true);
       }
     }
 

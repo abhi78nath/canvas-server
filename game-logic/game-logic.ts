@@ -182,19 +182,8 @@ export function createRoundManager(
         io.to(roomId).emit("drawRevoked");
         broadcastParticipants(roomId);
 
-        // After a short delay, disconnect all sockets in the room.
-        // The client should also handle redirection. This is a fallback.
-        setTimeout(() => {
-          const roomSockets = io.sockets.adapter.rooms.get(roomId);
-          if (roomSockets) {
-            roomSockets.forEach(socketId => {
-              const socket = io.sockets.sockets.get(socketId);
-              if (socket) {
-                socket.disconnect(true);
-              }
-            });
-          }
-        }, 10000); // Give clients 10 seconds to show final screen.
+        // Do not forcibly disconnect sockets on the server.
+        // Clients already handle redirect/disconnect after showing results.
 
         return;
       }
