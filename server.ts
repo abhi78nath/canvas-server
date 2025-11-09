@@ -15,6 +15,17 @@ const io = new Server(httpServer, {
   },
 });
 
+// Global CORS for REST endpoints
+app.use((req, res, next) => {
+	res.header("Access-Control-Allow-Origin", "*");
+	res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+	res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+	if (req.method === "OPTIONS") {
+		return res.sendStatus(204);
+	}
+	next();
+});
+
 // Per-room state
 type RoomState = {
   currentDrawer: string | null;
@@ -88,6 +99,36 @@ const throttle = (fn: Function, limit: number) => {
     }
   };
 };
+
+// REST endpoint: proxy RandomUser API
+app.get("/api/random-user", async (req, res) => {
+	try {
+		res.setHeader("Access-Control-Allow-Origin", "*");
+		res.setHeader("Vary", "Origin");
+		const { results, gender, nat, seed, inc, exc, page } = req.query as Record<string, string | undefined>;
+		const params = new URLSearchParams();
+		if (results) params.set("results", results);
+		if (gender) params.set("gender", gender);
+		if (nat) params.set("nat", nat);
+		if (seed) params.set("seed", seed);
+		if (inc) params.set("inc", inc);
+		if (exc) params.set("exc", exc);
+		if (page) params.set("page", page);
+
+		const url = `https://randomuser.me/api/${params.toString() ? `?${params.toString()}` : ""}`;
+		const response = await fetch(url);
+		if (!response.ok) {
+			return res.status(response.status).json({ error: "Upstream RandomUser error", status: response.status });
+		}
+		const data = await response.json();
+		console.log("RandomUser data:", data?.results?.[0]?.login?.username);
+		res.setHeader("Cache-Control", "no-store");
+		return res.json(data?.results?.[0]?.login?.username);
+	} catch (error) {
+		console.error("RandomUser fetch failed:", error);
+		return res.status(500).json({ error: "Failed to fetch random user", username: null });
+	}
+});
 
 io.on("connection", (socket: Socket) => {
   console.log("User connected:", socket.id);
