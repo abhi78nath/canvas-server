@@ -143,6 +143,11 @@ export function createRoundManager(
   function rotateToNext(roomId: string) {
     const state = getRoomState(roomId);
     if (!state.roundInProgress) return;
+    // If we no longer have enough players to continue, stop immediately
+    if (state.users.size < 2) {
+      stopDueToInsufficientPlayers(roomId);
+      return;
+    }
 
     // Award points to the drawer if their turn is ending
     const drawer = state.users.get(state.currentDrawer!);
@@ -197,15 +202,8 @@ export function createRoundManager(
       buildDrawerOrder(roomId);
       state.currentDrawerIndex = 0;
       if (state.drawerOrder.length < 2) {
-        // Not enough players to continue
-        state.roundInProgress = false;
-        clearRoundTimer(state);
-        io.to(roomId).emit("chatMessage", {
-          id: `system_${Date.now()}`,
-          author: "System",
-          text: `The game has ended due to a lack of players.`,
-          timestamp: Date.now(),
-        });
+        // Not enough players to continue; transition to waiting state
+        stopDueToInsufficientPlayers(roomId);
         return;
       }
       const nextDrawerId = state.drawerOrder[state.currentDrawerIndex];
@@ -215,6 +213,26 @@ export function createRoundManager(
 
     const nextDrawerId = state.drawerOrder[state.currentDrawerIndex];
     grantDrawTo(roomId, nextDrawerId);
+  }
+
+  function stopDueToInsufficientPlayers(roomId: string) {
+    const state = getRoomState(roomId);
+    state.roundInProgress = false;
+    clearRoundTimer(state);
+    clearWordChoiceTimer(state);
+    clearHintTimer(state);
+    state.currentDrawer = null;
+    for (const [, user] of state.users.entries()) user.isDrawing = false;
+    io.to(roomId).emit("drawRevoked");
+    broadcastParticipants(roomId);
+    io.to(roomId).emit("waitingForPlayers");
+  }
+
+  function ensureSufficientPlayersOrStop(roomId: string) {
+    const state = getRoomState(roomId);
+    if (state.roundInProgress && state.users.size < 2) {
+      stopDueToInsufficientPlayers(roomId);
+    }
   }
 
   function onUserJoin(roomId: string, socketId: string) {
@@ -305,6 +323,7 @@ export function createRoundManager(
     isCurrentDrawer,
     onUserLeft,
     startMainRoundTimer,
+    ensureSufficientPlayersOrStop,
   };
 }
 
