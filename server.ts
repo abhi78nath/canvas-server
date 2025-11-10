@@ -160,24 +160,26 @@ io.on("connection", (socket: Socket) => {
       }
     }
     if (existingSocketId) {
-      // Clean up previous connection that used the same username (treat as reconnect/duplicate name)
-      const previousUser = state.users.get(existingSocketId);
-      state.users.delete(existingSocketId);
-      socketRoom.delete(existingSocketId);
-      if (state.currentDrawer === existingSocketId) {
-        state.currentDrawer = null;
-        io.to(roomId).emit("drawRevoked");
-      }
-      // Notify room that the previous user left and fully disconnect their socket
-      if (previousUser) {
-        io.to(roomId).emit("userLeft", previousUser.username);
-      }
-      const oldSocket = io.sockets.sockets.get(existingSocketId);
-      if (oldSocket) {
-        try {
-          oldSocket.leave(roomId);
-        } catch {}
-        oldSocket.disconnect(true);
+      if (existingSocketId !== socket.id) {
+        // Clean up previous connection that used the same username (treat as reconnect/duplicate name)
+        const previousUser = state.users.get(existingSocketId);
+        state.users.delete(existingSocketId);
+        socketRoom.delete(existingSocketId);
+        if (state.currentDrawer === existingSocketId) {
+          state.currentDrawer = null;
+          io.to(roomId).emit("drawRevoked");
+        }
+        // Notify room that the previous user left and fully disconnect their socket
+        if (previousUser) {
+          io.to(roomId).emit("userLeft", previousUser.username);
+        }
+        const oldSocket = io.sockets.sockets.get(existingSocketId);
+        if (oldSocket) {
+          try {
+            oldSocket.leave(roomId);
+          } catch {}
+          oldSocket.disconnect(true);
+        }
       }
     }
 
@@ -356,7 +358,11 @@ io.on("connection", (socket: Socket) => {
       io.to(room).emit("userLeft", user.username);
       // If drawer left mid-round, rotate to next; otherwise just update participants/draw state
       if (state.currentDrawer === socket.id && state.roundInProgress) {
-        roundManager.rotateToNext(room);
+        // If not enough players remain, stop; otherwise rotate
+        roundManager.ensureSufficientPlayersOrStop(room);
+        if (state.roundInProgress) {
+          roundManager.rotateToNext(room);
+        }
       } else {
         if (state.currentDrawer === socket.id) {
           state.currentDrawer = null;
@@ -364,8 +370,12 @@ io.on("connection", (socket: Socket) => {
           io.to(room).emit("drawRevoked");
         }
         roundManager.broadcastParticipants(room);
-        // If after disconnect we now have >=2 users and no round in progress, start one
-        roundManager.startRotationIfEligible(room);
+        // If insufficient players remain while a round was active, stop the game
+        roundManager.ensureSufficientPlayersOrStop(room);
+        // Otherwise, if after disconnect we now have >=2 users and no round in progress, start one
+        if (!getRoomState(room).roundInProgress) {
+          roundManager.startRotationIfEligible(room);
+        }
       }
       if (state.users.size === 0) {
         console.log(`Room ${room} is empty, deleting`);
