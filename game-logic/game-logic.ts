@@ -30,7 +30,7 @@ export function createRoundManager(
   io: Server,
   getRoomState: (roomId: string) => RotationRoomState
 ) {
-  const ROUND_DURATION_MS = 80000;
+  const ROUND_DURATION_MS = 60000;
   const WORD_CHOICE_DURATION_MS = 15000;
 
   function broadcastParticipants(roomId: string) {
@@ -278,6 +278,12 @@ export function createRoundManager(
     scheduleNextHint(roomId, 10000);
   }
 
+  function getRevealLimitForWord(word: string) {
+    // Only count non-space characters
+    const lettersOnlyLength = (word || "").split("").filter((c) => c !== " ").length;
+    return Math.ceil(lettersOnlyLength / 3);
+  }
+
   function scheduleNextHint(roomId: string, delay: number) {
     const state = getRoomState(roomId);
     clearHintTimer(state); // Clear previous timer
@@ -286,6 +292,12 @@ export function createRoundManager(
 
     state.hintTimer = setTimeout(() => {
       if (!state.currentWord || !state.roundInProgress) return;
+
+      // Enforce a maximum number of reveals equal to ceil(1/3) of the word length (excluding spaces)
+      const revealLimit = getRevealLimitForWord(state.currentWord);
+      if (state.revealedIndices.size >= revealLimit) {
+        return; // Stop scheduling further hints once limit reached
+      }
 
       // Find all indices of letters that haven't been revealed yet
       const unrevealedIndices: number[] = [];
@@ -296,8 +308,10 @@ export function createRoundManager(
         }
       }
 
-      // Only reveal a new letter if there's more than one character left to guess
-      if (unrevealedIndices.length > 1) {
+      // Reveal next letter if we haven't hit the limit
+      // Preserve existing behavior of avoiding revealing the final remaining character
+      const canRevealAnother = state.revealedIndices.size < revealLimit;
+      if (unrevealedIndices.length > 1 && canRevealAnother) {
         const randomIndexToReveal = unrevealedIndices[Math.floor(Math.random() * unrevealedIndices.length)];
         state.revealedIndices.add(randomIndexToReveal);
 
@@ -310,7 +324,9 @@ export function createRoundManager(
         io.to(roomId).emit("wordHint", newHint.trim());
 
         // Schedule the next hint
-        scheduleNextHint(roomId, 10000);
+        if (state.revealedIndices.size < revealLimit) {
+          scheduleNextHint(roomId, 10000);
+        }
       }
     }, delay);
   }
