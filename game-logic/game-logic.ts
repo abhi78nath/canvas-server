@@ -17,6 +17,7 @@ export type RotationRoomState = {
   roundEndsAt?: number;
   wordChoiceEndsAt?: number;
   currentWord: string;
+  pendingWordChoices?: string[];
   revealedIndices: Set<number>;
   correctGuessers: string[];
   lastGuessTime: number | null;
@@ -56,6 +57,7 @@ export function createRoundManager(
     state.currentDrawer = drawerId;
     state.correctGuessers = [];
     state.lastGuessTime = null;
+    state.pendingWordChoices = [];
     for (const [id, user] of state.users.entries()) {
       user.isDrawing = id === drawerId;
     }
@@ -69,6 +71,7 @@ export function createRoundManager(
 
     // Send word choices only to the new drawer
     const wordOptions = getRandomWords(3);
+    state.pendingWordChoices = wordOptions.slice();
     io.to(drawerId).emit("wordChoices", wordOptions);
 
     broadcastParticipants(roomId);
@@ -76,14 +79,27 @@ export function createRoundManager(
     // Start a timer for word choice. If it expires, skip their turn.
     clearWordChoiceTimer(state);
     state.wordChoiceTimer = setTimeout(() => {
-      const username = state.users.get(drawerId)?.username || "The player";
-      io.to(roomId).emit("chatMessage", {
-        id: `system_${Date.now()}`,
-        author: "System",
-        text: `${username} ran out of time to choose a word.`,
-        timestamp: Date.now(),
-      });
-      rotateToNext(roomId);
+      // Auto-choose a random word from the options if time runs out
+      const options = Array.isArray(state.pendingWordChoices) && state.pendingWordChoices.length > 0
+        ? state.pendingWordChoices
+        : getRandomWords(3);
+      const chosen = options[Math.floor(Math.random() * options.length)];
+      state.currentWord = chosen;
+      state.pendingWordChoices = [];
+
+      // Inform only the drawer about the chosen word so they can see it explicitly
+      io.to(drawerId).emit("wordChosen", chosen);
+
+      // Begin the round with the auto-chosen word
+      startMainRoundTimer(roomId);
+
+      // Send initial masked hint
+      const masked = chosen
+        .split("")
+        .map((c) => (c === " " ? " " : "_"))
+        .join(" ")
+        .trim();
+      io.to(roomId).emit("wordHint", masked);
     }, WORD_CHOICE_DURATION_MS);
   }
 
