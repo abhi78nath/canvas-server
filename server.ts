@@ -88,6 +88,26 @@ function getRoomState(room: string): RoomState {
   return state;
 }
 
+// Matchmaking helpers
+function generateRoomId(): string {
+  // Generate a short, URL-safe lowercase id that matches existing validation (alphanumeric and '-')
+  let id: string;
+  do {
+    id = `room-${Math.random().toString(36).slice(2, 8)}`.toLowerCase();
+  } while (rooms.has(id));
+  return id;
+}
+
+function pickRandomJoinableRoomId(): string | undefined {
+  const candidates: string[] = [];
+  for (const [id, state] of rooms.entries()) {
+    if (state.users.size < 8) candidates.push(id);
+  }
+  if (candidates.length === 0) return undefined;
+  const idx = Math.floor(Math.random() * candidates.length);
+  return candidates[idx];
+}
+
 // Throttle draw events
 const throttle = (fn: Function, limit: number) => {
   let lastCall = 0;
@@ -200,6 +220,85 @@ io.on("connection", (socket: Socket) => {
 
     callback?.({ success: true, roomId, playerId: socket.id });
     console.log(`${username} joined ${roomId}`);
+
+    // Start rotation when there are at least two users
+    roundManager.startRotationIfEligible(roomId);
+  });
+
+  // Matchmaking: server-generated room IDs and automatic placement
+  socket.on("play", ({ name }: { name: string }, callback?: (res: any) => void) => {
+    const usernameRaw = String(name ?? "");
+    const username = validator.escape(usernameRaw.trim());
+
+    if (!username || username.length < 2 || username.length > 20) {
+      return callback?.({ error: "Username must be 2-20 characters" });
+    }
+
+    // Try to find a joinable room, otherwise create one
+    let roomId = pickRandomJoinableRoomId();
+    if (!roomId) {
+      roomId = generateRoomId();
+      // Ensure room is created
+      getRoomState(roomId);
+    }
+
+    const state = getRoomState(roomId);
+    if (state.users.size >= 8) {
+      // Extremely rare race: room filled between selection and join. Retry once with a new room.
+      roomId = generateRoomId();
+      getRoomState(roomId);
+    }
+
+    // Handle reconnect within the same room: replace old socket for same username
+    let existingSocketId: string | null = null;
+    for (const [sid, user] of state.users.entries()) {
+      if (user.username.toLowerCase() === username.toLowerCase()) {
+        existingSocketId = sid;
+        break;
+      }
+    }
+    if (existingSocketId && existingSocketId !== socket.id) {
+      const previousUser = state.users.get(existingSocketId);
+      state.users.delete(existingSocketId);
+      socketRoom.delete(existingSocketId);
+      if (state.currentDrawer === existingSocketId) {
+        state.currentDrawer = null;
+        io.to(roomId).emit("drawRevoked");
+      }
+      if (previousUser) {
+        io.to(roomId).emit("userLeft", previousUser.username);
+      }
+      const oldSocket = io.sockets.sockets.get(existingSocketId);
+      if (oldSocket) {
+        try {
+          oldSocket.leave(roomId);
+        } catch {}
+        oldSocket.disconnect(true);
+      }
+    }
+
+    // Final capacity guard
+    if (state.users.size >= 8) {
+      return callback?.({ error: "No available rooms at the moment. Please try again." });
+    }
+
+    socket.join(roomId);
+    socketRoom.set(socket.id, roomId);
+    state.users.set(socket.id, { username, score: 0, isDrawing: false });
+    roundManager.onUserJoin(roomId, socket.id);
+
+    if (state.roundInProgress) {
+      socket.emit("newRound", {
+        roundNumber: state.roundNumber,
+        totalRounds: state.totalRounds,
+      });
+    }
+
+    io.to(roomId).emit("userJoined", username);
+    roundManager.broadcastParticipants(roomId);
+
+    callback?.({ success: true, roomId, playerId: socket.id });
+    console.log(`${username} joined via matchmaking into ${roomId}`);
 
     // Start rotation when there are at least two users
     roundManager.startRotationIfEligible(roomId);
