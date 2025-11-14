@@ -121,38 +121,60 @@ const throttle = (fn: Function, limit: number) => {
 };
 
 // REST endpoint: proxy RandomUser API
-app.get("/api/random-user", async (req, res) => {
-	try {
-		res.setHeader("Access-Control-Allow-Origin", "*");
-		res.setHeader("Vary", "Origin");
-		const { results, gender, nat, seed, inc, exc, page } = req.query as Record<string, string | undefined>;
-		const params = new URLSearchParams();
-		if (results) params.set("results", results);
-		if (gender) params.set("gender", gender);
-		if (nat) params.set("nat", nat);
-		if (seed) params.set("seed", seed);
-		if (inc) params.set("inc", inc);
-		if (exc) params.set("exc", exc);
-		if (page) params.set("page", page);
+// app.get("/api/random-user", async (req, res) => {
+// 	try {
+// 		res.setHeader("Access-Control-Allow-Origin", "*");
+// 		res.setHeader("Vary", "Origin");
+// 		const { results, gender, nat, seed, inc, exc, page } = req.query as Record<string, string | undefined>;
+// 		const params = new URLSearchParams();
+// 		if (results) params.set("results", results);
+// 		if (gender) params.set("gender", gender);
+// 		if (nat) params.set("nat", nat);
+// 		if (seed) params.set("seed", seed);
+// 		if (inc) params.set("inc", inc);
+// 		if (exc) params.set("exc", exc);
+// 		if (page) params.set("page", page);
 
-		const url = `https://randomuser.me/api/${params.toString() ? `?${params.toString()}` : ""}`;
-		const response = await fetch(url, {
-			headers: {
-				"User-Agent": "CollaborativeApp/1.0 (+https://localhost)",
-				"Accept": "application/json",
-			},
-		});
-		if (!response.ok) {
-			return res.status(response.status).json({ error: "Upstream RandomUser error", status: response.status });
-		}
-		const data = await response.json();
-		console.log("RandomUser data:", data?.results?.[0]?.login?.username);
-		res.setHeader("Cache-Control", "no-store");
-		return res.json(data?.results?.[0]?.login?.username);
-	} catch (error) {
-		console.error("RandomUser fetch failed:", error);
-		return res.status(500).json({ error: "Failed to fetch random user", username: null });
-	}
+// 		const url = `https://randomuser.me/api/${params.toString() ? `?${params.toString()}` : ""}`;
+// 		const response = await fetch(url, {
+// 			headers: {
+// 				"User-Agent": "CollaborativeApp/1.0 (+https://localhost)",
+// 				"Accept": "application/json",
+// 			},
+// 		});
+// 		if (!response.ok) {
+// 			return res.status(response.status).json({ error: "Upstream RandomUser error", status: response.status });
+// 		}
+// 		const data = await response.json();
+// 		console.log("RandomUser data:", data?.results?.[0]?.login?.username);
+// 		res.setHeader("Cache-Control", "no-store");
+// 		return res.json(data?.results?.[0]?.login?.username);
+// 	} catch (error) {
+// 		console.error("RandomUser fetch failed:", error);
+// 		return res.status(500).json({ error: "Failed to fetch random user", username: null });
+// 	}
+// });
+app.get("/api/random-user", async (req, res) => {
+  try {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Cache-Control", "no-store");
+
+    // Simple random username generator: adjective + noun (customize lists as needed)
+    const adjectives = ["cool", "swift", "brave", "zany", "quick", "bold", "funky", "giddy"];
+    const nouns = ["fox", "bear", "eagle", "wolf", "tiger", "lion", "shark", "owl"];
+    const numbers = Math.floor(Math.random() * 9999).toString().padStart(4, "0");
+
+    const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
+    const noun = nouns[Math.floor(Math.random() * nouns.length)];
+    const username = `${adj}${noun}${numbers}`;
+
+    console.log("Generated username:", username);
+    return res.json(username);
+  } catch (error) {
+    console.error("Username generation failed:", error);
+    return res.status(500).json({ error: "Failed to generate username", username: null });
+  }
 });
 
 io.on("connection", (socket: Socket) => {
