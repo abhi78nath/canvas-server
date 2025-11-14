@@ -136,7 +136,12 @@ app.get("/api/random-user", async (req, res) => {
 		if (page) params.set("page", page);
 
 		const url = `https://randomuser.me/api/${params.toString() ? `?${params.toString()}` : ""}`;
-		const response = await fetch(url);
+		const response = await fetch(url, {
+			headers: {
+				"User-Agent": "CollaborativeApp/1.0 (+https://localhost)",
+				"Accept": "application/json",
+			},
+		});
 		if (!response.ok) {
 			return res.status(response.status).json({ error: "Upstream RandomUser error", status: response.status });
 		}
